@@ -3,6 +3,9 @@ pub mod json_language_server_ext;
 pub mod lsp_ext_command;
 pub mod rust_analyzer_ext;
 
+mod inlay_hint_cache;
+
+use self::inlay_hint_cache::InlayHintCache;
 use crate::{
     CodeAction, ColorPresentation, Completion, CompletionResponse, CompletionSource,
     CoreCompletion, DocumentColor, Hover, InlayHint, LocationLink, LspAction, LspPullDiagnostics,
@@ -470,7 +473,7 @@ impl LocalLspStore {
     }
 
     fn setup_lsp_messages(
-        this: WeakEntity<LspStore>,
+        lsp_store: WeakEntity<LspStore>,
         fs: Arc<dyn Fs>,
         language_server: &LanguageServer,
         delegate: Arc<dyn LspAdapterDelegate>,
@@ -481,7 +484,7 @@ impl LocalLspStore {
         language_server
             .on_notification::<lsp::notification::PublishDiagnostics, _>({
                 let adapter = adapter.clone();
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |mut params, cx| {
                     let adapter = adapter.clone();
                     if let Some(this) = this.upgrade() {
@@ -521,7 +524,7 @@ impl LocalLspStore {
             .on_request::<lsp::request::WorkspaceConfiguration, _, _>({
                 let adapter = adapter.adapter.clone();
                 let delegate = delegate.clone();
-                let this = this.clone();
+                let this = lsp_store.clone();
                 let fs = fs.clone();
                 move |params, cx| {
                     let adapter = adapter.clone();
@@ -563,7 +566,7 @@ impl LocalLspStore {
 
         language_server
             .on_request::<lsp::request::WorkspaceFoldersRequest, _, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |_, cx| {
                     let this = this.clone();
                     let mut cx = cx.clone();
@@ -592,7 +595,7 @@ impl LocalLspStore {
         // to these requests when initializing.
         language_server
             .on_request::<lsp::request::WorkDoneProgressCreate, _, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |params, cx| {
                     let this = this.clone();
                     let mut cx = cx.clone();
@@ -614,7 +617,7 @@ impl LocalLspStore {
 
         language_server
             .on_request::<lsp::request::RegisterCapability, _, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |params, cx| {
                     let this = this.clone();
                     let mut cx = cx.clone();
@@ -747,7 +750,7 @@ impl LocalLspStore {
 
         language_server
             .on_request::<lsp::request::UnregisterCapability, _, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |params, cx| {
                     let this = this.clone();
                     let mut cx = cx.clone();
@@ -820,7 +823,7 @@ impl LocalLspStore {
         language_server
             .on_request::<lsp::request::ApplyWorkspaceEdit, _, _>({
                 let adapter = adapter.clone();
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |params, cx| {
                     let mut cx = cx.clone();
                     let this = this.clone();
@@ -841,18 +844,22 @@ impl LocalLspStore {
 
         language_server
             .on_request::<lsp::request::InlayHintRefreshRequest, _, _>({
-                let this = this.clone();
+                let lsp_store = lsp_store.clone();
                 move |(), cx| {
-                    let this = this.clone();
+                    let this = lsp_store.clone();
                     let mut cx = cx.clone();
                     async move {
-                        this.update(&mut cx, |this, cx| {
-                            cx.emit(LspStoreEvent::RefreshInlayHints);
-                            this.downstream_client.as_ref().map(|(client, project_id)| {
-                                client.send(proto::RefreshInlayHints {
-                                    project_id: *project_id,
+                        this.update(&mut cx, |lsp_store, cx| {
+                            cx.emit(LspStoreEvent::RefreshInlayHints(server_id));
+                            lsp_store
+                                .downstream_client
+                                .as_ref()
+                                .map(|(client, project_id)| {
+                                    client.send(proto::RefreshInlayHints {
+                                        project_id: *project_id,
+                                        server_id: server_id.to_proto(),
+                                    })
                                 })
-                            })
                         })?
                         .transpose()?;
                         Ok(())
@@ -863,7 +870,7 @@ impl LocalLspStore {
 
         language_server
             .on_request::<lsp::request::CodeLensRefresh, _, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |(), cx| {
                     let this = this.clone();
                     let mut cx = cx.clone();
@@ -885,7 +892,7 @@ impl LocalLspStore {
 
         language_server
             .on_request::<lsp::request::WorkspaceDiagnosticRefresh, _, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |(), cx| {
                     let this = this.clone();
                     let mut cx = cx.clone();
@@ -911,7 +918,7 @@ impl LocalLspStore {
 
         language_server
             .on_request::<lsp::request::ShowMessageRequest, _, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 let name = name.to_string();
                 move |params, cx| {
                     let this = this.clone();
@@ -949,7 +956,7 @@ impl LocalLspStore {
             .detach();
         language_server
             .on_notification::<lsp::notification::ShowMessage, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 let name = name.to_string();
                 move |params, cx| {
                     let this = this.clone();
@@ -981,7 +988,7 @@ impl LocalLspStore {
 
         language_server
             .on_notification::<lsp::notification::Progress, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |params, cx| {
                     if let Some(this) = this.upgrade() {
                         this.update(cx, |this, cx| {
@@ -1000,7 +1007,7 @@ impl LocalLspStore {
 
         language_server
             .on_notification::<lsp::notification::LogMessage, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |params, cx| {
                     if let Some(this) = this.upgrade() {
                         this.update(cx, |_, cx| {
@@ -1018,7 +1025,7 @@ impl LocalLspStore {
 
         language_server
             .on_notification::<lsp::notification::LogTrace, _>({
-                let this = this.clone();
+                let this = lsp_store.clone();
                 move |params, cx| {
                     let mut cx = cx.clone();
                     if let Some(this) = this.upgrade() {
@@ -1036,8 +1043,8 @@ impl LocalLspStore {
             .detach();
 
         json_language_server_ext::register_requests(this.clone(), language_server);
-        rust_analyzer_ext::register_notifications(this.clone(), language_server);
-        clangd_ext::register_notifications(this, language_server, adapter);
+        rust_analyzer_ext::register_notifications(lsp_store.clone(), language_server);
+        clangd_ext::register_notifications(lsp_store, language_server, adapter);
     }
 
     fn shutdown_language_servers_on_quit(
@@ -3551,7 +3558,8 @@ pub struct LspStore {
     _maintain_buffer_languages: Task<()>,
     diagnostic_summaries:
         HashMap<WorktreeId, HashMap<Arc<Path>, HashMap<LanguageServerId, DiagnosticSummary>>>,
-    lsp_data: HashMap<BufferId, DocumentColorData>,
+    color_data: HashMap<BufferId, DocumentColorData>,
+    inlay_hint_data: HashMap<BufferId, InlayHintCache>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -3592,7 +3600,7 @@ pub enum LspStoreEvent {
         new_language: Option<Arc<Language>>,
     },
     Notification(String),
-    RefreshInlayHints,
+    RefreshInlayHints(LanguageServerId),
     RefreshCodeLens,
     DiagnosticsUpdated {
         language_server_id: LanguageServerId,
@@ -3804,7 +3812,8 @@ impl LspStore {
             language_server_statuses: Default::default(),
             nonce: StdRng::from_entropy().r#gen(),
             diagnostic_summaries: HashMap::default(),
-            lsp_data: HashMap::default(),
+            color_data: HashMap::default(),
+            inlay_hint_data: HashMap::default(),
             active_entry: None,
             _maintain_workspace_config,
             _maintain_buffer_languages: Self::maintain_buffer_languages(languages, cx),
@@ -3861,7 +3870,8 @@ impl LspStore {
             language_server_statuses: Default::default(),
             nonce: StdRng::from_entropy().r#gen(),
             diagnostic_summaries: HashMap::default(),
-            lsp_data: HashMap::default(),
+            color_data: HashMap::default(),
+            inlay_hint_data: HashMap::default(),
             active_entry: None,
             toolchain_store,
             _maintain_workspace_config,
@@ -4162,7 +4172,8 @@ impl LspStore {
                         *refcount
                     };
                     if refcount == 0 {
-                        lsp_store.lsp_data.remove(&buffer_id);
+                        lsp_store.color_data.remove(&buffer_id);
+                        lsp_store.inlay_hint_data.remove(&buffer_id);
                         let local = lsp_store.as_local_mut().unwrap();
                         local.registered_buffers.remove(&buffer_id);
                         local.buffers_opened_in_servers.remove(&buffer_id);
@@ -6609,7 +6620,7 @@ impl LspStore {
             ColorFetchStrategy::UseCache {
                 known_cache_version,
             } => {
-                if let Some(cached_data) = self.lsp_data.get(&buffer_id) {
+                if let Some(cached_data) = self.color_data.get(&buffer_id) {
                     if !version_queried_for.changed_since(&cached_data.colors_for_version) {
                         let has_different_servers = self.as_local().is_some_and(|local| {
                             local
@@ -6642,7 +6653,7 @@ impl LspStore {
             }
         }
 
-        let lsp_data = self.lsp_data.entry(buffer_id).or_default();
+        let lsp_data = self.color_data.entry(buffer_id).or_default();
         if let Some((updating_for, running_update)) = &lsp_data.colors_update {
             if !version_queried_for.changed_since(&updating_for) {
                 return Some(running_update.clone());
@@ -6679,7 +6690,7 @@ impl LspStore {
                         lsp_store
                             .update(cx, |lsp_store, _| {
                                 lsp_store
-                                    .lsp_data
+                                    .color_data
                                     .entry(buffer_id)
                                     .or_default()
                                     .colors_update = None;
@@ -6691,7 +6702,7 @@ impl LspStore {
 
                 lsp_store
                     .update(cx, |lsp_store, _| {
-                        let lsp_data = lsp_store.lsp_data.entry(buffer_id).or_default();
+                        let lsp_data = lsp_store.color_data.entry(buffer_id).or_default();
 
                         if lsp_data.colors_for_version == query_version_queried_for {
                             lsp_data.colors.extend(fetched_colors.clone());
@@ -9311,7 +9322,7 @@ impl LspStore {
         if let Some(status) = self.language_server_statuses.get_mut(&language_server_id) {
             if let Some(work) = status.pending_work.remove(&token) {
                 if !work.is_disk_based_diagnostics_progress {
-                    cx.emit(LspStoreEvent::RefreshInlayHints);
+                    cx.emit(LspStoreEvent::RefreshInlayHints(language_server_id));
                 }
             }
             cx.notify();
@@ -9444,12 +9455,14 @@ impl LspStore {
     }
 
     async fn handle_refresh_inlay_hints(
-        this: Entity<Self>,
-        _: TypedEnvelope<proto::RefreshInlayHints>,
+        lsp_store: Entity<Self>,
+        envelope: TypedEnvelope<proto::RefreshInlayHints>,
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
-        this.update(&mut cx, |_, cx| {
-            cx.emit(LspStoreEvent::RefreshInlayHints);
+        lsp_store.update(&mut cx, |_, cx| {
+            cx.emit(LspStoreEvent::RefreshInlayHints(
+                LanguageServerId::from_proto(envelope.payload.server_id),
+            ));
         })?;
         Ok(proto::Ack {})
     }
@@ -10697,7 +10710,7 @@ impl LspStore {
             language_server.name(),
             Some(key.0),
         ));
-        cx.emit(LspStoreEvent::RefreshInlayHints);
+        cx.emit(LspStoreEvent::RefreshInlayHints(server_id));
 
         if let Some((downstream_client, project_id)) = self.downstream_client.as_ref() {
             downstream_client
@@ -11278,15 +11291,19 @@ impl LspStore {
     }
 
     fn cleanup_lsp_data(&mut self, for_server: LanguageServerId) {
-        for buffer_lsp_data in self.lsp_data.values_mut() {
-            buffer_lsp_data.colors.remove(&for_server);
-            buffer_lsp_data.cache_version += 1;
+        for color_data in self.color_data.values_mut() {
+            color_data.colors.remove(&for_server);
+            color_data.cache_version += 1;
         }
         if let Some(local) = self.as_local_mut() {
             local.buffer_pull_diagnostics_result_ids.remove(&for_server);
             for buffer_servers in local.buffers_opened_in_servers.values_mut() {
                 buffer_servers.remove(&for_server);
             }
+        }
+
+        for inlay_hint_cache in self.inlay_hint_data.values_mut() {
+            inlay_hint_cache.remove_server_data(for_server);
         }
     }
 
